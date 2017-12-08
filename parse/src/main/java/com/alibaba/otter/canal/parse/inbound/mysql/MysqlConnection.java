@@ -6,7 +6,6 @@ import java.nio.charset.Charset;
 import java.util.List;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.lang.exception.ExceptionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,30 +20,51 @@ import com.alibaba.otter.canal.parse.exception.CanalParseException;
 import com.alibaba.otter.canal.parse.inbound.ErosaConnection;
 import com.alibaba.otter.canal.parse.inbound.SinkFunction;
 import com.alibaba.otter.canal.parse.inbound.mysql.dbsync.DirectLogFetcher;
+import com.alibaba.otter.canal.parse.support.AuthenticationInfo;
 import com.taobao.tddl.dbsync.binlog.LogContext;
 import com.taobao.tddl.dbsync.binlog.LogDecoder;
 import com.taobao.tddl.dbsync.binlog.LogEvent;
 
 public class MysqlConnection implements ErosaConnection {
 
-    private static final Logger logger  = LoggerFactory.getLogger(MysqlConnection.class);
+    private static final Logger logger      = LoggerFactory.getLogger(MysqlConnection.class);
 
     private MysqlConnector      connector;
     private long                slaveId;
-    private Charset             charset = Charset.forName("UTF-8");
+    private Charset             charset     = Charset.forName("UTF-8");
     private BinlogFormat        binlogFormat;
     private BinlogImage         binlogImage;
+
+    // tsdb releated
+    private AuthenticationInfo  authInfo;
+    protected int               connTimeout = 5 * 1000;                                      // 5秒
+    protected int               soTimeout   = 60 * 60 * 1000;                                // 1小时
 
     public MysqlConnection(){
     }
 
     public MysqlConnection(InetSocketAddress address, String username, String password){
+        authInfo = new AuthenticationInfo();
+        authInfo.setAddress(address);
+        authInfo.setUsername(username);
+        authInfo.setPassword(password);
         connector = new MysqlConnector(address, username, password);
+        // 将connection里面的参数透传下
+        connector.setSoTimeout(soTimeout);
+        connector.setConnTimeout(connTimeout);
     }
 
     public MysqlConnection(InetSocketAddress address, String username, String password, byte charsetNumber,
                            String defaultSchema){
+        authInfo = new AuthenticationInfo();
+        authInfo.setAddress(address);
+        authInfo.setUsername(username);
+        authInfo.setPassword(password);
+        authInfo.setDefaultDatabaseName(defaultSchema);
         connector = new MysqlConnector(address, username, password, charsetNumber, defaultSchema);
+        // 将connection里面的参数透传下
+        connector.setSoTimeout(soTimeout);
+        connector.setConnTimeout(connTimeout);
     }
 
     public void connect() throws IOException {
@@ -66,6 +86,11 @@ public class MysqlConnection implements ErosaConnection {
     public ResultSetPacket query(String cmd) throws IOException {
         MysqlQueryExecutor exector = new MysqlQueryExecutor(connector);
         return exector.query(cmd);
+    }
+
+    public List<ResultSetPacket> queryMulti(String cmd) throws IOException {
+        MysqlQueryExecutor exector = new MysqlQueryExecutor(connector);
+        return exector.queryMulti(cmd);
     }
 
     public void update(String cmd) throws IOException {
@@ -131,6 +156,7 @@ public class MysqlConnection implements ErosaConnection {
         BinlogDumpCommandPacket binlogDumpCmd = new BinlogDumpCommandPacket();
         binlogDumpCmd.binlogFileName = binlogfilename;
         binlogDumpCmd.binlogPosition = binlogPosition;
+        // binlogDumpCmd.slaveServerId = this.slaveId;
         binlogDumpCmd.slaveServerId = this.slaveId;
         byte[] cmdBody = binlogDumpCmd.toBytes();
 
@@ -147,6 +173,8 @@ public class MysqlConnection implements ErosaConnection {
         connection.setCharset(getCharset());
         connection.setSlaveId(getSlaveId());
         connection.setConnector(connector.fork());
+        // set authInfo
+        connection.setAuthInfo(authInfo);
         return connection;
     }
 
@@ -167,25 +195,25 @@ public class MysqlConnection implements ErosaConnection {
         try {
             update("set wait_timeout=9999999");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update wait_timeout failed", e);
         }
         try {
             update("set net_write_timeout=1800");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update net_write_timeout failed", e);
         }
 
         try {
             update("set net_read_timeout=1800");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update net_read_timeout failed", e);
         }
 
         try {
             // 设置服务端返回结果时不做编码转化，直接按照数据库的二进制编码进行发送，由客户端自己根据需求进行编码转化
             update("set names 'binary'");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update names failed", e);
         }
 
         try {
@@ -195,7 +223,7 @@ public class MysqlConnection implements ErosaConnection {
             // 但也不能乱设置，需要和mysql server的checksum配置一致，不然RotateLogEvent会出现乱码
             update("set @master_binlog_checksum= '@@global.binlog_checksum'");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update master_binlog_checksum failed", e);
         }
 
         try {
@@ -204,7 +232,7 @@ public class MysqlConnection implements ErosaConnection {
             update("set @slave_uuid=uuid()");
         } catch (Exception e) {
             if (!StringUtils.contains(e.getMessage(), "Unknown system variable")) {
-                logger.warn(ExceptionUtils.getFullStackTrace(e));
+                logger.warn("update slave_uuid failed", e);
             }
         }
 
@@ -212,7 +240,7 @@ public class MysqlConnection implements ErosaConnection {
             // mariadb针对特殊的类型，需要设置session变量
             update("SET @mariadb_slave_capability='" + LogEvent.MARIA_SLAVE_CAPABILITY_MINE + "'");
         } catch (Exception e) {
-            logger.warn(ExceptionUtils.getFullStackTrace(e));
+            logger.warn("update mariadb_slave_capability failed", e);
         }
     }
 
@@ -382,4 +410,23 @@ public class MysqlConnection implements ErosaConnection {
         return binlogImage;
     }
 
+    public InetSocketAddress getAddress() {
+        return authInfo.getAddress();
+    }
+
+    public void setConnTimeout(int connTimeout) {
+        this.connTimeout = connTimeout;
+    }
+
+    public void setSoTimeout(int soTimeout) {
+        this.soTimeout = soTimeout;
+    }
+
+    public AuthenticationInfo getAuthInfo() {
+        return authInfo;
+    }
+
+    public void setAuthInfo(AuthenticationInfo authInfo) {
+        this.authInfo = authInfo;
+    }
 }
