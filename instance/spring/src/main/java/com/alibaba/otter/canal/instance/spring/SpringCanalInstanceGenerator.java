@@ -16,6 +16,7 @@ public class SpringCanalInstanceGenerator implements CanalInstanceGenerator, Bea
     private String      defaultName = "instance";
     private BeanFactory beanFactory;
 
+    @Override
     public CanalInstance generate(String destination) {
         String beanName = destination;
         if (!beanFactory.containsBean(beanName)) {
@@ -25,6 +26,7 @@ public class SpringCanalInstanceGenerator implements CanalInstanceGenerator, Bea
         return (CanalInstance) beanFactory.getBean(beanName);
     }
 
+    @Override
     public void setBeanFactory(BeanFactory beanFactory) throws BeansException {
         this.beanFactory = beanFactory;
     }
